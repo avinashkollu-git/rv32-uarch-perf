@@ -16,7 +16,8 @@ n3:     add   x8, x7, x0        # EX/MEM forward of a jalr link
 lp:     jal   ra, f
         addi  x9, x9, -1
         bne   x9, x0, lp
-        j     halt
+        jal   ra, f             # second call site: the BTB still holds the old
+        j     halt              # return address, so the return mispredicts its target
 f:      addi  x10, ra, 0        # right behind a predicted call
         add   x5, x5, x10
         jalr  x0, ra, 0

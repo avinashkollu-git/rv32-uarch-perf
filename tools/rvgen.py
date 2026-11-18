@@ -5,6 +5,9 @@ Every program:
   - starts by loading random values into x1..x29 and a data base into x31,
   - is followed by a random body whose instruction mix depends on the test,
   - ends with "halt: j halt" (the testbench stops when it retires).
+  - with --loops N, the random body runs N times inside a counted loop (x28
+    is the counter and is never a random destination), so the branch
+    predictor sees each branch again, with new register values each time.
 
 Constraints that keep programs legal and terminating:
   - branches and jumps only go forward, so every program halts,
@@ -20,7 +23,7 @@ import argparse, os, random, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from assemble import assemble
 
-IMEM_WORDS = 256       # must match riscv_core IMEM_WORDS
+IMEM_WORDS = 512       # must match riscv_core IMEM_WORDS
 DATA_BASE = 0x200      # x31; offsets -512..508 keep addresses in 0..1020 (256 words)
 
 R_OPS = ["add", "sub", "and", "or", "xor", "sll", "srl", "sra", "slt", "sltu"]
@@ -37,9 +40,10 @@ MIXES = {
 }
 
 class Gen:
-    def __init__(self, seed, mix, n):
+    def __init__(self, seed, mix, n, loops=1):
         self.r = random.Random(seed)
-        self.mix, self.n = mix, n
+        self.mix, self.n, self.loops = mix, n, loops
+        self.max_rd = 27 if loops > 1 else 29   # x28 is the loop counter
         self.lines, self.recent = [], []
         self.pending = []          # [label, instructions still to emit before it]
         self.single_only = 0       # after a jalr, keep items 1 instruction long
@@ -63,7 +67,7 @@ class Gen:
         return name
 
     def rd(self):
-        r = self.r.randint(1, 29)
+        r = self.r.randint(1, self.max_rd)
         self.recent = ([r] + self.recent)[:3]
         return r
 
@@ -120,6 +124,9 @@ class Gen:
             self.emit(f"lui x{v}, {self.r.randint(0, 0xfffff)}")
             self.emit(f"addi x{v}, x{v}, {self.r.randint(-2048, 2047)}")
         self.emit(f"li x31, {DATA_BASE}")
+        if self.loops > 1:
+            self.emit(f"li x28, {self.loops}")
+            self.lines.append("top:")
         for _ in range(self.n):
             self.place_labels()
             k = self.r.choices(kinds, weights)[0]
@@ -133,6 +140,9 @@ class Gen:
         while self.pending:       # forward targets past the end land on halt
             self.emit("nop")
             self.place_labels()
+        if self.loops > 1:
+            self.emit("addi x28, x28, -1")
+            self.emit("bne x28, x0, top")
         self.lines.append("halt:   j halt")
         return "\n".join(self.lines) + "\n"
 
@@ -141,12 +151,13 @@ def main():
     ap.add_argument("--test", required=True, choices=sorted(MIXES))
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--n", type=int, default=150, help="random body items")
+    ap.add_argument("--loops", type=int, default=1, help="run the random body this many times")
     ap.add_argument("--out", required=True, help="output .asm path (.hex written next to it)")
     a = ap.parse_args()
-    src = Gen(a.seed, MIXES[a.test], a.n).body()
+    src = Gen(a.seed, MIXES[a.test], a.n, a.loops).body()
     words = assemble(src)
     assert len(words) <= IMEM_WORDS, f"program too long: {len(words)} words"
-    open(a.out, "w").write(f"# rvgen.py --test {a.test} --seed {a.seed} --n {a.n}\n" + src)
+    open(a.out, "w").write(f"# rvgen.py --test {a.test} --seed {a.seed} --n {a.n} --loops {a.loops}\n" + src)
     with open(os.path.splitext(a.out)[0] + ".hex", "w") as f:
         f.writelines(f"{w:08x}\n" for w in words)
 
